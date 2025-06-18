@@ -48,18 +48,35 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
     """Merge multiple DOCX files into a single DOCX"""
+    # Start with the first document as the base
+    if not file_paths:
+        return
+    
     combined_doc = docx.Document()
     
+    # Process each document
     for i, file_path in enumerate(file_paths):
         doc = docx.Document(file_path)
         
         # Skip adding a page break before the first document
         if i > 0:
+            # Ensure each document starts on a new page
             combined_doc.add_page_break()
         
-        # Copy content from each document
+        # Copy content from each document (excluding any empty paragraphs at the beginning)
+        paragraphs_to_copy = []
         for element in doc.element.body:
+            # Add the element to our list
+            paragraphs_to_copy.append(element)
+        
+        # Copy all content to the combined document
+        for element in paragraphs_to_copy:
             combined_doc.element.body.append(element)
+    
+    # Remove any empty paragraphs at the beginning of the document
+    while combined_doc.paragraphs and not combined_doc.paragraphs[0].text.strip():
+        p = combined_doc.paragraphs[0]._element
+        p.getparent().remove(p)
     
     combined_doc.save(output_path)
 
