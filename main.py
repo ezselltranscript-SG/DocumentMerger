@@ -52,26 +52,45 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
     if not file_paths:
         return
     
+    # Create a new empty document for the combined output
     combined_doc = docx.Document()
     
     # Process each document
     for i, file_path in enumerate(file_paths):
+        # Load the document
         doc = docx.Document(file_path)
         
-        # Skip adding a page break before the first document
+        # For documents after the first one, ensure we're starting on a new page
         if i > 0:
-            # Ensure each document starts on a new page
-            combined_doc.add_page_break()
+            # Force a page break by adding a section break
+            combined_doc.add_section()
+            section = combined_doc.sections[-1]
+            section.start_type = 2  # New page section break
         
-        # Copy content from each document (excluding any empty paragraphs at the beginning)
-        paragraphs_to_copy = []
-        for element in doc.element.body:
-            # Add the element to our list
-            paragraphs_to_copy.append(element)
+        # Copy all content from the document
+        for para in doc.paragraphs:
+            # Copy paragraph text and formatting
+            new_para = combined_doc.add_paragraph()
+            new_para.text = para.text
+            new_para.style = para.style
+            
+            # Copy runs with their formatting
+            for run in para.runs:
+                new_run = new_para.add_run(run.text)
+                new_run.bold = run.bold
+                new_run.italic = run.italic
+                new_run.underline = run.underline
+                new_run.font.size = run.font.size
+                if run.font.color.rgb:
+                    new_run.font.color.rgb = run.font.color.rgb
         
-        # Copy all content to the combined document
-        for element in paragraphs_to_copy:
-            combined_doc.element.body.append(element)
+        # Copy tables
+        for table in doc.tables:
+            new_table = combined_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+            for i, row in enumerate(table.rows):
+                for j, cell in enumerate(row.cells):
+                    if i < len(new_table.rows) and j < len(new_table.rows[i].cells):
+                        new_table.rows[i].cells[j].text = cell.text
     
     # Remove any empty paragraphs at the beginning of the document
     while combined_doc.paragraphs and not combined_doc.paragraphs[0].text.strip():
