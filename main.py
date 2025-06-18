@@ -2,6 +2,9 @@ import os
 import re
 import shutil
 import tempfile
+import subprocess
+import io
+import html
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, HTMLResponse
@@ -9,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pypdf import PdfWriter, PdfReader
 import docx
+from weasyprint import HTML, CSS
 
 app = FastAPI(title="PDF and DOCX Merger")
 
@@ -45,6 +49,65 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as output_file:
         merger.write(output_file)
 
+# Helper function to convert DOCX to PDF
+def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> None:
+    """Convert a DOCX file to PDF using WeasyPrint"""
+    try:
+        print(f"Converting DOCX to PDF: {docx_path} -> {pdf_path}")
+        
+        # Load the DOCX document
+        doc = docx.Document(docx_path)
+        
+        # Extract content and convert to HTML
+        html_content = ["<html><head><style>",
+                       "body { font-family: Arial, sans-serif; line-height: 1.5; }",
+                       "h1, h2, h3, h4, h5, h6 { margin-top: 1em; }",
+                       "table { border-collapse: collapse; width: 100%; }",
+                       "table, th, td { border: 1px solid #ddd; }",
+                       "th, td { padding: 8px; text-align: left; }",
+                       "</style></head><body>"]
+        
+        # Process paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                # Determine if it's a heading based on style
+                style_name = para.style.name.lower() if para.style and para.style.name else ""
+                
+                if "heading" in style_name:
+                    level = 1
+                    if style_name[-1].isdigit():
+                        level = int(style_name[-1])
+                        if level > 6:
+                            level = 6  # HTML only supports h1-h6
+                    
+                    html_content.append(f"<h{level}>{html.escape(para.text)}</h{level}>")
+                else:
+                    html_content.append(f"<p>{html.escape(para.text)}</p>")
+        
+        # Process tables
+        for table in doc.tables:
+            html_content.append("<table>")
+            for row in table.rows:
+                html_content.append("<tr>")
+                for cell in row.cells:
+                    cell_text = ""
+                    for para in cell.paragraphs:
+                        if para.text.strip():
+                            cell_text += html.escape(para.text) + "<br/>"
+                    html_content.append(f"<td>{cell_text}</td>")
+                html_content.append("</tr>")
+            html_content.append("</table>")
+        
+        html_content.append("</body></html>")
+        html_string = "\n".join(html_content)
+        
+        # Convert HTML to PDF using WeasyPrint
+        HTML(string=html_string).write_pdf(pdf_path)
+        print("PDF conversion successful")
+        return True
+    except Exception as e:
+        print(f"Error converting DOCX to PDF: {str(e)}")
+        return False
 
 
 # Helper function to merge DOCX files
@@ -241,14 +304,29 @@ async def merge_files(
         
         # Determine file type and merge accordingly
         file_ext = os.path.splitext(sorted_files[0].filename)[1].lower()
-        output_path = f"uploads/{output_filename}{file_ext}"
         
         if file_ext == '.pdf':
             # For PDF files, merge them directly
-            merge_pdf_files(temp_file_paths, output_path)
+            pdf_output_path = f"uploads/{output_filename}.pdf"
+            merge_pdf_files(temp_file_paths, pdf_output_path)
+            output_path = pdf_output_path
         else:  # .docx or .doc
-            # For DOCX files, merge them
-            merge_docx_files_custom(temp_file_paths, output_path)
+            # For DOCX files, first merge them
+            docx_output_path = f"uploads/{output_filename}.docx"
+            merge_docx_files_custom(temp_file_paths, docx_output_path)
+            
+            # Then convert to PDF
+            pdf_output_path = f"uploads/{output_filename}.pdf"
+            conversion_success = convert_docx_to_pdf(docx_output_path, pdf_output_path)
+            
+            if conversion_success:
+                # If conversion succeeded, use the PDF file
+                output_path = pdf_output_path
+                print(f"Successfully converted to PDF: {pdf_output_path}")
+            else:
+                # If conversion failed, use the original DOCX file
+                output_path = docx_output_path
+                print(f"Using original DOCX file: {docx_output_path}")
     
     # Set the appropriate media type based on file extension
     if output_path.endswith(".pdf"):
