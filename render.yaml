@@ -4,7 +4,7 @@ services:
     env: python
     buildCommand: |
       apt-get update -y
-      apt-get install -y libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 libffi-dev libjpeg-dev libopenjp2-7-dev
+      apt-get install -y pandoc
       pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
