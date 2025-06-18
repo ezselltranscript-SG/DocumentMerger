@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+import subprocess
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, HTMLResponse
@@ -9,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pypdf import PdfWriter, PdfReader
 import docx
+from docx2pdf import convert
 
 app = FastAPI(title="PDF and DOCX Merger")
 
@@ -52,52 +54,50 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
     if not file_paths:
         return
     
-    # Create a new empty document for the combined output
-    combined_doc = docx.Document()
+    # Use the first document as a base and then append others with page breaks
+    first_doc = docx.Document(file_paths[0])
     
-    # Process each document
-    for i, file_path in enumerate(file_paths):
-        # Load the document
+    # Process each additional document
+    for i, file_path in enumerate(file_paths[1:], 1):  # Start from the second document
+        # Add a section break to ensure new document starts on a new page
+        first_doc.add_section()
+        section = first_doc.sections[-1]
+        section.start_type = 2  # New page section break
+        
+        # Load the document to append
         doc = docx.Document(file_path)
         
-        # For documents after the first one, ensure we're starting on a new page
-        if i > 0:
-            # Force a page break by adding a section break
-            combined_doc.add_section()
-            section = combined_doc.sections[-1]
-            section.start_type = 2  # New page section break
-        
-        # Copy all content from the document
+        # Append all paragraphs from the document
         for para in doc.paragraphs:
-            # Copy paragraph text and formatting
-            new_para = combined_doc.add_paragraph()
-            new_para.text = para.text
-            new_para.style = para.style
+            # Create a new paragraph with the same style
+            p = first_doc.add_paragraph()
+            p.style = para.style
             
-            # Copy runs with their formatting
+            # Copy all runs with their formatting
             for run in para.runs:
-                new_run = new_para.add_run(run.text)
-                new_run.bold = run.bold
-                new_run.italic = run.italic
-                new_run.underline = run.underline
-                new_run.font.size = run.font.size
+                r = p.add_run(run.text)
+                r.bold = run.bold
+                r.italic = run.italic
+                r.underline = run.underline
+                if run.font.size:
+                    r.font.size = run.font.size
                 if run.font.color.rgb:
-                    new_run.font.color.rgb = run.font.color.rgb
+                    r.font.color.rgb = run.font.color.rgb
         
         # Copy tables
         for table in doc.tables:
-            new_table = combined_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+            # Create a new table with the same dimensions
+            tbl = first_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+            
+            # Copy cell contents
             for i, row in enumerate(table.rows):
                 for j, cell in enumerate(row.cells):
-                    if i < len(new_table.rows) and j < len(new_table.rows[i].cells):
-                        new_table.rows[i].cells[j].text = cell.text
+                    if i < len(tbl.rows) and j < len(tbl.rows[i].cells):
+                        # Copy cell text
+                        tbl.rows[i].cells[j].text = cell.text
     
-    # Remove any empty paragraphs at the beginning of the document
-    while combined_doc.paragraphs and not combined_doc.paragraphs[0].text.strip():
-        p = combined_doc.paragraphs[0]._element
-        p.getparent().remove(p)
-    
-    combined_doc.save(output_path)
+    # Save the combined document
+    first_doc.save(output_path)
 
 @app.get("/", response_class=HTMLResponse)
 async def get_upload_page():
@@ -241,17 +241,37 @@ async def merge_files(
         
         # Determine file type and merge accordingly
         file_ext = os.path.splitext(sorted_files[0].filename)[1].lower()
-        output_path = f"uploads/{output_filename}{file_ext}"
         
+        # Always create PDF as the final output
         if file_ext == '.pdf':
-            merge_pdf_files(temp_file_paths, output_path)
+            # For PDF files, merge them directly
+            pdf_output_path = f"uploads/{output_filename}.pdf"
+            merge_pdf_files(temp_file_paths, pdf_output_path)
+            output_path = pdf_output_path
         else:  # .docx or .doc
-            merge_docx_files_custom(temp_file_paths, output_path)
+            # For DOCX files, first merge them
+            docx_output_path = f"uploads/{output_filename}.docx"
+            merge_docx_files_custom(temp_file_paths, docx_output_path)
+            
+            # Then convert to PDF
+            pdf_output_path = f"uploads/{output_filename}.pdf"
+            try:
+                # Try using docx2pdf
+                convert(docx_output_path, pdf_output_path)
+                output_path = pdf_output_path
+            except Exception as e:
+                # If conversion fails, return the DOCX file
+                print(f"PDF conversion failed: {str(e)}")
+                output_path = docx_output_path
+    
+    # Determine the correct filename and media type
+    final_filename = os.path.basename(output_path)
+    media_type = "application/pdf" if output_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     
     return FileResponse(
         path=output_path,
-        filename=f"{output_filename}{file_ext}",
-        media_type="application/octet-stream"
+        filename=final_filename,
+        media_type=media_type
     )
 
 if __name__ == "__main__":
