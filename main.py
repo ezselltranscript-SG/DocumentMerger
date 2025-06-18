@@ -2,10 +2,6 @@ import os
 import re
 import shutil
 import tempfile
-import io
-import base64
-import subprocess
-import sys
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, HTMLResponse
@@ -13,14 +9,6 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pypdf import PdfWriter, PdfReader
 import docx
-
-# Try to import pypandoc, but don't fail if it's not available
-try:
-    import pypandoc
-    PYPANDOC_AVAILABLE = True
-except ImportError:
-    print("Warning: pypandoc not available, will use fallback methods for PDF conversion")
-    PYPANDOC_AVAILABLE = False
 
 app = FastAPI(title="PDF and DOCX Merger")
 
@@ -57,93 +45,7 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as output_file:
         merger.write(output_file)
 
-# Helper function to convert DOCX to PDF
-def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> None:
-    """Convert a DOCX file to PDF using the best available method"""
-    # Method 1: Use pypandoc if available
-    if PYPANDOC_AVAILABLE:
-        try:
-            print(f"Converting DOCX to PDF using pypandoc: {docx_path} -> {pdf_path}")
-            output = pypandoc.convert_file(docx_path, 'pdf', outputfile=pdf_path)
-            print("Conversion successful with pypandoc")
-            return
-        except Exception as e:
-            print(f"Error using pypandoc: {str(e)}")
-    else:
-        print("Pypandoc not available, skipping this method")
-        
-    # Method 2: Try using subprocess to call pandoc directly
-    try:
-        print("Trying direct pandoc call...")
-        result = subprocess.run(
-            ["pandoc", docx_path, "-o", pdf_path],
-            check=False,  # Don't raise exception on non-zero exit
-            capture_output=True,
-            text=True
-        )
-        if result.returncode == 0:
-            print("Direct pandoc conversion successful")
-            return
-        else:
-            print(f"Pandoc failed with return code {result.returncode}")
-            print(f"Stdout: {result.stdout}")
-            print(f"Stderr: {result.stderr}")
-    except Exception as e:
-        print(f"Error with direct pandoc call: {str(e)}")
-    
-    # Method 3: Try using a simple PDF writer as a fallback
-    try:
-        print("Using PDF writer as fallback...")
-        # Extract text content from the DOCX
-        doc = docx.Document(docx_path)
-        
-        # Get all text from paragraphs
-        paragraphs = []
-        for para in doc.paragraphs:
-            if para.text.strip():
-                paragraphs.append(para.text.strip())
-        
-        # Get text from tables
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = ' | '.join([cell.text.strip() for cell in row.cells if cell.text.strip()])
-                if row_text:
-                    paragraphs.append(row_text)
-        
-        # Join all text
-        content = "\n\n".join(paragraphs)
-        print(f"Extracted {len(paragraphs)} paragraphs of content")
-        
-        # Create a PDF with the content
-        with open(pdf_path, "wb") as pdf_file:
-            writer = PdfWriter()
-            writer.add_blank_page(width=612, height=792)  # Letter size
-            
-            if content:
-                # Add some metadata
-                writer.add_metadata({'/Title': 'Merged Document', '/Author': 'PDF Merger App'})
-                writer.write(pdf_file)
-                print("Created PDF with content")
-            else:
-                writer.write(pdf_file)
-                print("Created empty PDF as fallback")
-        return
-    except Exception as e:
-        print(f"PDF writer fallback failed: {str(e)}")
-    
-    # Method 4: Ultimate fallback - just create an empty PDF
-    try:
-        print("Creating minimal PDF as ultimate fallback")
-        with open(pdf_path, "wb") as pdf_file:
-            writer = PdfWriter()
-            writer.add_blank_page(width=612, height=792)  # Letter size
-            writer.write(pdf_file)
-    except Exception as e:
-        print(f"All PDF conversion methods failed: {str(e)}")
-        # Create an empty file as a last resort
-        with open(pdf_path, "wb") as f:
-            f.write(b"")
-        print("Created empty file as ultimate fallback")
+
 
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
@@ -339,36 +241,24 @@ async def merge_files(
         
         # Determine file type and merge accordingly
         file_ext = os.path.splitext(sorted_files[0].filename)[1].lower()
+        output_path = f"uploads/{output_filename}{file_ext}"
         
-        # Always create PDF as the final output
         if file_ext == '.pdf':
             # For PDF files, merge them directly
-            pdf_output_path = f"uploads/{output_filename}.pdf"
-            merge_pdf_files(temp_file_paths, pdf_output_path)
-            output_path = pdf_output_path
+            merge_pdf_files(temp_file_paths, output_path)
         else:  # .docx or .doc
-            # For DOCX files, first merge them
-            docx_output_path = f"uploads/{output_filename}.docx"
-            merge_docx_files_custom(temp_file_paths, docx_output_path)
-            
-            # Then convert to PDF using reportlab
-            pdf_output_path = f"uploads/{output_filename}.pdf"
-            try:
-                # Convert DOCX to PDF using our custom function
-                convert_docx_to_pdf(docx_output_path, pdf_output_path)
-                output_path = pdf_output_path
-            except Exception as e:
-                # If conversion fails, return the DOCX file
-                print(f"PDF conversion failed: {str(e)}")
-                output_path = docx_output_path
+            # For DOCX files, merge them
+            merge_docx_files_custom(temp_file_paths, output_path)
     
-    # Determine the correct filename and media type
-    final_filename = os.path.basename(output_path)
-    media_type = "application/pdf" if output_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    # Set the appropriate media type based on file extension
+    if output_path.endswith(".pdf"):
+        media_type = "application/pdf"
+    else:  # .docx or .doc
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     
     return FileResponse(
         path=output_path,
-        filename=final_filename,
+        filename=os.path.basename(output_path),
         media_type=media_type
     )
 
