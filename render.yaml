@@ -2,10 +2,7 @@ services:
   - type: web
     name: document-merger
     env: python
-    buildCommand: |
-      apt-get update -y
-      apt-get install -y pandoc
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION

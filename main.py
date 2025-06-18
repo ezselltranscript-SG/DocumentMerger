@@ -2,8 +2,6 @@ import os
 import re
 import shutil
 import tempfile
-import subprocess
-import io
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, HTMLResponse
@@ -47,72 +45,7 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as output_file:
         merger.write(output_file)
 
-# Helper function to convert DOCX to PDF
-def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> bool:
-    """Convert a DOCX file to PDF using pandoc"""
-    try:
-        print(f"Converting DOCX to PDF using pandoc: {docx_path} -> {pdf_path}")
-        
-        # Use pandoc to convert DOCX to PDF
-        result = subprocess.run(
-            ["pandoc", docx_path, "-o", pdf_path],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode == 0:
-            print("PDF conversion successful using pandoc")
-            return True
-        else:
-            print(f"Pandoc conversion failed: {result.stderr}")
-            
-            # Fallback: Create a simple PDF with text content
-            print("Using fallback PDF creation method")
-            doc = docx.Document(docx_path)
-            
-            # Extract text content
-            text_content = []
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    text_content.append(para.text)
-            
-            # Extract table content
-            for table in doc.tables:
-                for row in table.rows:
-                    row_text = ' | '.join([cell.text.strip() for cell in row.cells])
-                    if row_text.strip():
-                        text_content.append(row_text)
-            
-            # Create a simple PDF with the text content
-            writer = PdfWriter()
-            writer.add_blank_page(width=612, height=792)  # Letter size
-            
-            # Add metadata
-            writer.add_metadata({
-                '/Title': 'Merged Document',
-                '/Author': 'PDF Merger App'
-            })
-            
-            # Write the PDF file
-            with open(pdf_path, "wb") as pdf_file:
-                writer.write(pdf_file)
-            
-            print("Created fallback PDF")
-            return True
-    except Exception as e:
-        print(f"Error converting DOCX to PDF: {str(e)}")
-        
-        try:
-            # Ultimate fallback: Create an empty PDF
-            writer = PdfWriter()
-            writer.add_blank_page(width=612, height=792)  # Letter size
-            with open(pdf_path, "wb") as pdf_file:
-                writer.write(pdf_file)
-            print("Created empty PDF as ultimate fallback")
-            return True
-        except:
-            return False
+
 
 
 # Helper function to merge DOCX files
@@ -309,29 +242,14 @@ async def merge_files(
         
         # Determine file type and merge accordingly
         file_ext = os.path.splitext(sorted_files[0].filename)[1].lower()
+        output_path = f"uploads/{output_filename}{file_ext}"
         
         if file_ext == '.pdf':
             # For PDF files, merge them directly
-            pdf_output_path = f"uploads/{output_filename}.pdf"
-            merge_pdf_files(temp_file_paths, pdf_output_path)
-            output_path = pdf_output_path
+            merge_pdf_files(temp_file_paths, output_path)
         else:  # .docx or .doc
-            # For DOCX files, first merge them
-            docx_output_path = f"uploads/{output_filename}.docx"
-            merge_docx_files_custom(temp_file_paths, docx_output_path)
-            
-            # Then convert to PDF
-            pdf_output_path = f"uploads/{output_filename}.pdf"
-            conversion_success = convert_docx_to_pdf(docx_output_path, pdf_output_path)
-            
-            if conversion_success:
-                # If conversion succeeded, use the PDF file
-                output_path = pdf_output_path
-                print(f"Successfully converted to PDF: {pdf_output_path}")
-            else:
-                # If conversion failed, use the original DOCX file
-                output_path = docx_output_path
-                print(f"Using original DOCX file: {docx_output_path}")
+            # For DOCX files, merge them
+            merge_docx_files_custom(temp_file_paths, output_path)
     
     # Set the appropriate media type based on file extension
     if output_path.endswith(".pdf"):
