@@ -2,6 +2,8 @@ import os
 import re
 import shutil
 import tempfile
+import io
+import base64
 import subprocess
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -10,7 +12,11 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pypdf import PdfWriter, PdfReader
 import docx
-from docx2pdf import convert
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = FastAPI(title="PDF and DOCX Merger")
 
@@ -46,6 +52,48 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     
     with open(output_path, "wb") as output_file:
         merger.write(output_file)
+
+# Helper function to convert DOCX to PDF
+def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> None:
+    """Convert a DOCX file to PDF using ReportLab"""
+    # Load the DOCX document
+    doc = docx.Document(docx_path)
+    
+    # Create a PDF document
+    pdf = SimpleDocTemplate(pdf_path, pagesize=letter)
+    styles = getSampleStyleSheet()
+    flowables = []
+    
+    # Process each paragraph in the DOCX
+    for para in doc.paragraphs:
+        if para.text.strip():
+            # Determine style based on paragraph style
+            style_name = 'Normal'
+            if para.style.name.startswith('Heading'):
+                style_name = 'Heading1'
+            
+            # Create a paragraph with the appropriate style
+            p = Paragraph(para.text, styles[style_name])
+            flowables.append(p)
+            flowables.append(Spacer(1, 0.2 * inch))
+    
+    # Process tables (simplified - tables are complex to convert perfectly)
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = ' | '.join([cell.text for cell in row.cells])
+            if row_text.strip():
+                p = Paragraph(row_text, styles['Normal'])
+                flowables.append(p)
+                flowables.append(Spacer(1, 0.2 * inch))
+    
+    # Build the PDF
+    pdf.build(flowables)
+    
+    # If the PDF is empty (no flowables), create a simple PDF with a message
+    if not flowables:
+        c = canvas.Canvas(pdf_path, pagesize=letter)
+        c.drawString(1 * inch, 10 * inch, "No content found in the document.")
+        c.save()
 
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
@@ -253,11 +301,11 @@ async def merge_files(
             docx_output_path = f"uploads/{output_filename}.docx"
             merge_docx_files_custom(temp_file_paths, docx_output_path)
             
-            # Then convert to PDF
+            # Then convert to PDF using reportlab
             pdf_output_path = f"uploads/{output_filename}.pdf"
             try:
-                # Try using docx2pdf
-                convert(docx_output_path, pdf_output_path)
+                # Convert DOCX to PDF using our custom function
+                convert_docx_to_pdf(docx_output_path, pdf_output_path)
                 output_path = pdf_output_path
             except Exception as e:
                 # If conversion fails, return the DOCX file
