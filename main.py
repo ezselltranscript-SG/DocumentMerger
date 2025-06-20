@@ -22,6 +22,17 @@ os.makedirs("static", exist_ok=True)
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Add CORS middleware to allow cross-origin requests
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 # Helper function to extract part number from filename
 def extract_part_number(filename: str) -> int:
     """Extract part number from filename (e.g., 'file_part1.pdf' -> 1)"""
@@ -343,6 +354,75 @@ async def merge_files(
         filename=os.path.basename(output_path),
         media_type=media_type
     )
+
+@app.post("/api/merge/")
+async def api_merge_files(
+    file: UploadFile = File(...),
+    output_filename: str = Form("merged_document")
+):
+    """API endpoint to merge files from a ZIP or RAR archive"""
+    # Check if the file is a compressed archive
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ['.zip', '.rar']:
+        raise HTTPException(status_code=400, detail="Only ZIP or RAR archives are supported")
+    
+    # Create a temporary directory to store and extract files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Save the uploaded archive
+        temp_file_path = os.path.join(temp_dir, file.filename)
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Create extraction directory
+        extract_dir = os.path.join(temp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        # Extract files from the archive
+        try:
+            extracted_files = extract_compressed_file(temp_file_path, extract_dir)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error extracting archive: {str(e)}")
+        
+        # Filter for PDF and DOCX files only
+        valid_extensions = ['.pdf', '.docx', '.doc']
+        filtered_files = filter_files_by_extension(extracted_files, valid_extensions)
+        
+        if not filtered_files:
+            raise HTTPException(status_code=400, detail="No PDF or DOCX/DOC files found in the archive")
+        
+        # Check if all files are of the same type
+        file_extensions = [os.path.splitext(path)[1].lower() for path in filtered_files]
+        unique_extensions = set(file_extensions)
+        
+        if len(unique_extensions) > 1:
+            raise HTTPException(status_code=400, 
+                              detail="Files in the archive must be of the same type (either all PDF or all DOCX/DOC)")
+        
+        # Sort extracted files by part number in filename
+        sorted_paths = sorted(filtered_files, key=lambda path: extract_part_number(os.path.basename(path)))
+        
+        # Determine file type and set output path
+        file_ext = os.path.splitext(sorted_paths[0])[1].lower()
+        output_path = f"uploads/{output_filename}{file_ext}"
+        
+        if file_ext == '.pdf':
+            # For PDF files, merge them directly
+            merge_pdf_files(sorted_paths, output_path)
+        else:  # .docx or .doc
+            # For DOCX files, merge them
+            merge_docx_files_custom(sorted_paths, output_path)
+        
+        # Set the appropriate media type based on file extension
+        if output_path.endswith(".pdf"):
+            media_type = "application/pdf"
+        else:  # .docx or .doc
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        
+        return FileResponse(
+            path=output_path,
+            filename=os.path.basename(output_path),
+            media_type=media_type
+        )
 
 if __name__ == "__main__":
     # Get port from environment variable or default to 8000
