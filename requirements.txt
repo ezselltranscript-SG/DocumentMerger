@@ -4,3 +4,5 @@ python-multipart==0.0.6
 pypdf==3.17.1
 python-docx==1.0.1
 aiofiles==23.2.1
+rarfile==4.0
+patool==1.12

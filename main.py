@@ -2,7 +2,10 @@ import os
 import re
 import shutil
 import tempfile
-from typing import List, Optional
+import zipfile
+import rarfile
+import patoolib
+from typing import List, Optional, Tuple
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -47,6 +50,41 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
 
 
 
+
+# Helper function to extract files from compressed archives
+def extract_compressed_file(file_path: str, extract_dir: str) -> List[str]:
+    """Extract files from ZIP or RAR archive and return paths to extracted files"""
+    file_ext = os.path.splitext(file_path)[1].lower()
+    extracted_files = []
+    
+    try:
+        if file_ext == '.zip':
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+                extracted_files = [os.path.join(extract_dir, name) for name in zip_ref.namelist() 
+                                if not name.endswith('/')]  # Skip directories
+        elif file_ext == '.rar':
+            rarfile.UNRAR_TOOL = 'unrar'  # Make sure unrar is installed on the system
+            with rarfile.RarFile(file_path) as rar_ref:
+                rar_ref.extractall(extract_dir)
+                extracted_files = [os.path.join(extract_dir, name) for name in rar_ref.namelist() 
+                                if not rar_ref.getinfo(name).isdir()]
+        else:
+            # Use patool for other archive formats
+            patoolib.extract_archive(file_path, outdir=extract_dir)
+            # Get all files in the extraction directory
+            for root, _, files in os.walk(extract_dir):
+                for file in files:
+                    extracted_files.append(os.path.join(root, file))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error extracting archive: {str(e)}")
+    
+    return extracted_files
+
+# Helper function to filter files by extension
+def filter_files_by_extension(file_paths: List[str], extensions: List[str]) -> List[str]:
+    """Filter files by their extensions"""
+    return [path for path in file_paths if os.path.splitext(path)[1].lower() in extensions]
 
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
@@ -182,9 +220,10 @@ async def get_upload_page():
         <div class="container">
             <form action="/merge/" enctype="multipart/form-data" method="post" onsubmit="showLoading()">
                 <div class="form-group">
-                    <label for="files">Select files to merge:</label>
-                    <input type="file" name="files" id="files" multiple required accept=".pdf,.docx,.doc">
+                    <label for="files">Select files to merge or upload a compressed archive:</label>
+                    <input type="file" name="files" id="files" multiple required accept=".pdf,.docx,.doc,.zip,.rar">
                     <p class="note">Files will be merged in order based on "part" numbers in their names (e.g., file_part1.pdf, file_part2.pdf)</p>
+                    <p class="note">You can also upload a ZIP or RAR file containing PDF or DOCX files to be merged</p>
                 </div>
                 <div class="form-group">
                     <label for="output_filename">Output filename (without extension):</label>
@@ -217,31 +256,73 @@ async def merge_files(
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
     
-    # Check if all files are of the same type
-    file_extensions = [os.path.splitext(file.filename)[1].lower() for file in files]
-    
-    if not all(ext in ['.pdf', '.docx', '.doc'] for ext in file_extensions):
-        raise HTTPException(status_code=400, detail="Only PDF and DOCX/DOC files are supported")
-    
-    if len(set(file_extensions)) > 1:
-        raise HTTPException(status_code=400, detail="All files must be of the same type (either all PDF or all DOCX/DOC)")
-    
-    # Sort files by part number
-    sorted_files = sort_files_by_part(files)
-    
     # Create a temporary directory to store uploaded files
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_file_paths = []
+        extracted_files = []
+        is_archive = False
         
         # Save uploaded files to temporary directory
-        for file in sorted_files:
+        for file in files:
+            file_ext = os.path.splitext(file.filename)[1].lower()
             temp_file_path = os.path.join(temp_dir, file.filename)
+            
             with open(temp_file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
-            temp_file_paths.append(temp_file_path)
+            
+            # Check if the file is a compressed archive
+            if file_ext in ['.zip', '.rar']:
+                is_archive = True
+                # Create a subdirectory for extraction
+                extract_dir = os.path.join(temp_dir, f"extracted_{os.path.basename(file.filename)}")
+                os.makedirs(extract_dir, exist_ok=True)
+                
+                # Extract files from the archive
+                extracted = extract_compressed_file(temp_file_path, extract_dir)
+                extracted_files.extend(extracted)
+            else:
+                temp_file_paths.append(temp_file_path)
         
-        # Determine file type and merge accordingly
-        file_ext = os.path.splitext(sorted_files[0].filename)[1].lower()
+        # If we extracted files from archives, use those instead
+        if is_archive:
+            # Filter for PDF and DOCX files only
+            valid_extensions = ['.pdf', '.docx', '.doc']
+            filtered_files = filter_files_by_extension(extracted_files, valid_extensions)
+            
+            if not filtered_files:
+                raise HTTPException(status_code=400, detail="No PDF or DOCX/DOC files found in the archive")
+            
+            # Check if all files are of the same type
+            file_extensions = [os.path.splitext(path)[1].lower() for path in filtered_files]
+            unique_extensions = set(file_extensions)
+            
+            if len(unique_extensions) > 1:
+                raise HTTPException(status_code=400, 
+                                  detail="Files in the archive must be of the same type (either all PDF or all DOCX/DOC)")
+            
+            # Sort extracted files by part number in filename
+            sorted_paths = sorted(filtered_files, key=lambda path: extract_part_number(os.path.basename(path)))
+            temp_file_paths = sorted_paths
+        else:
+            # For direct uploads, check file types
+            file_extensions = [os.path.splitext(file.filename)[1].lower() for file in files]
+            
+            if not all(ext in ['.pdf', '.docx', '.doc'] for ext in file_extensions):
+                raise HTTPException(status_code=400, detail="Only PDF and DOCX/DOC files are supported")
+            
+            if len(set(file_extensions)) > 1:
+                raise HTTPException(status_code=400, 
+                                  detail="All files must be of the same type (either all PDF or all DOCX/DOC)")
+            
+            # Sort files by part number
+            sorted_files = sort_files_by_part(files)
+            temp_file_paths = [os.path.join(temp_dir, file.filename) for file in sorted_files]
+        
+        # Determine file type and set output path
+        if not temp_file_paths:
+            raise HTTPException(status_code=400, detail="No valid files found to merge")
+            
+        file_ext = os.path.splitext(temp_file_paths[0])[1].lower()
         output_path = f"uploads/{output_filename}{file_ext}"
         
         if file_ext == '.pdf':
