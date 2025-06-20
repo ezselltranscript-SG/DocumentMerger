@@ -26,10 +26,6 @@ app.add_middleware(
 
 # Create directories if they don't exist
 os.makedirs("uploads", exist_ok=True)
-os.makedirs("static", exist_ok=True)
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Add CORS middleware to allow cross-origin requests
 from fastapi.middleware.cors import CORSMiddleware
