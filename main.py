@@ -357,21 +357,29 @@ async def merge_files(
 
 @app.post("/api/merge/")
 async def api_merge_files(
-    file: UploadFile = File(...),
-    output_filename: str = Form("merged_document")
+    file: UploadFile = File(None),
+    data: UploadFile = File(None),
+    archive: UploadFile = File(None),
+    output_filename: Optional[str] = Form("merged_document")
 ):
     """API endpoint to merge files from a ZIP or RAR archive"""
+    # Get the actual file from any of the possible parameter names
+    actual_file = file or data or archive
+    
+    if not actual_file:
+        raise HTTPException(status_code=400, detail="No file provided. Please upload a ZIP or RAR file using 'file', 'data', or 'archive' parameter")
+    
     # Check if the file is a compressed archive
-    file_ext = os.path.splitext(file.filename)[1].lower()
+    file_ext = os.path.splitext(actual_file.filename)[1].lower()
     if file_ext not in ['.zip', '.rar']:
-        raise HTTPException(status_code=400, detail="Only ZIP or RAR archives are supported")
+        raise HTTPException(status_code=400, detail=f"Only ZIP or RAR archives are supported. Received file with extension: {file_ext}")
     
     # Create a temporary directory to store and extract files
     with tempfile.TemporaryDirectory() as temp_dir:
         # Save the uploaded archive
-        temp_file_path = os.path.join(temp_dir, file.filename)
+        temp_file_path = os.path.join(temp_dir, actual_file.filename)
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            shutil.copyfileobj(actual_file.file, buffer)
         
         # Create extraction directory
         extract_dir = os.path.join(temp_dir, "extracted")
