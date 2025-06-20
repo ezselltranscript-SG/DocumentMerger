@@ -111,55 +111,120 @@ def filter_files_by_extension(file_paths: List[str], extensions: List[str]) -> L
 
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
-    """Merge multiple DOCX files into a single DOCX"""
-    # Start with the first document as the base
+    """Merge multiple DOCX files into a single DOCX preservando formato y encabezados"""
+    import io
+    from docx.oxml.shared import OxmlElement
+    from docx.oxml.ns import qn
+    from copy import deepcopy
+    
     if not file_paths:
         return
     
-    # Use the first document as a base and then append others with page breaks
-    first_doc = docx.Document(file_paths[0])
+    # Crear un documento combinado
+    combined_doc = docx.Document()
     
-    # Process each additional document
-    for i, file_path in enumerate(file_paths[1:], 1):  # Start from the second document
-        # Add a section break to ensure new document starts on a new page
-        first_doc.add_section()
-        section = first_doc.sections[-1]
-        section.start_type = 2  # New page section break
+    # Procesar cada documento
+    for i, file_path in enumerate(file_paths):
+        # Extraer el nombre del archivo para preservar información de encabezado
+        file_name = os.path.basename(file_path)
+        doc_part = f"Part{i+1}" if "Part" not in file_name else os.path.splitext(file_name)[0]
         
-        # Load the document to append
+        # Si no es el primer documento, agregar un salto de sección
+        if i > 0:
+            combined_doc.add_section()
+            section = combined_doc.sections[-1]
+            section.start_type = 2  # New page section break
+        
+        # Cargar el documento actual
         doc = docx.Document(file_path)
         
-        # Append all paragraphs from the document
-        for para in doc.paragraphs:
-            # Create a new paragraph with the same style
-            p = first_doc.add_paragraph()
-            p.style = para.style
-            
-            # Copy all runs with their formatting
-            for run in para.runs:
-                r = p.add_run(run.text)
-                r.bold = run.bold
-                r.italic = run.italic
-                r.underline = run.underline
-                if run.font.size:
-                    r.font.size = run.font.size
-                if run.font.color.rgb:
-                    r.font.color.rgb = run.font.color.rgb
+        # Preservar los estilos y propiedades del documento
+        for style in doc.styles:
+            try:
+                if style.name not in combined_doc.styles:
+                    combined_doc.styles.add_style(style.name, style.type)
+            except:
+                pass  # Ignorar errores si el estilo ya existe o no se puede copiar
         
-        # Copy tables
-        for table in doc.tables:
-            # Create a new table with the same dimensions
-            tbl = first_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+        # Copiar todos los párrafos con su formato exacto
+        for para in doc.paragraphs:
+            # Crear un nuevo párrafo con el mismo estilo
+            new_para = combined_doc.add_paragraph()
             
-            # Copy cell contents
+            # Copiar el estilo del párrafo
+            if para.style:
+                try:
+                    new_para.style = para.style
+                except:
+                    pass  # Si el estilo no se puede aplicar, continuar
+            
+            # Copiar alineación y otras propiedades del párrafo
+            if para.paragraph_format.alignment:
+                new_para.paragraph_format.alignment = para.paragraph_format.alignment
+            
+            # Copiar todos los runs con su formato exacto
+            for run in para.runs:
+                new_run = new_para.add_run(run.text)
+                
+                # Copiar formato básico
+                new_run.bold = run.bold
+                new_run.italic = run.italic
+                new_run.underline = run.underline
+                new_run.font.name = run.font.name
+                
+                # Copiar tamaño de fuente
+                if run.font.size:
+                    new_run.font.size = run.font.size
+                
+                # Copiar color
+                if run.font.color.rgb:
+                    new_run.font.color.rgb = run.font.color.rgb
+        
+        # Copiar tablas con su formato
+        for table in doc.tables:
+            # Crear una nueva tabla con las mismas dimensiones
+            new_table = combined_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+            
+            # Intentar copiar el estilo de la tabla
+            try:
+                new_table.style = table.style
+            except:
+                pass
+            
+            # Copiar contenido y formato de las celdas
             for i, row in enumerate(table.rows):
                 for j, cell in enumerate(row.cells):
-                    if i < len(tbl.rows) and j < len(tbl.rows[i].cells):
-                        # Copy cell text
-                        tbl.rows[i].cells[j].text = cell.text
+                    if i < len(new_table.rows) and j < len(new_table.rows[i].cells):
+                        # Copiar el contenido de la celda con formato
+                        target_cell = new_table.rows[i].cells[j]
+                        
+                        # Limpiar cualquier párrafo existente en la celda destino
+                        for p in target_cell.paragraphs:
+                            p._element.getparent().remove(p._element)
+                        
+                        # Copiar todos los párrafos de la celda origen a la destino
+                        for para in cell.paragraphs:
+                            cell_para = target_cell.add_paragraph()
+                            
+                            # Copiar estilo y formato
+                            try:
+                                cell_para.style = para.style
+                            except:
+                                pass
+                            
+                            # Copiar runs con formato
+                            for run in para.runs:
+                                cell_run = cell_para.add_run(run.text)
+                                cell_run.bold = run.bold
+                                cell_run.italic = run.italic
+                                cell_run.underline = run.underline
+                                if run.font.size:
+                                    cell_run.font.size = run.font.size
+                                if run.font.color.rgb:
+                                    cell_run.font.color.rgb = run.font.color.rgb
     
     # Save the combined document
-    first_doc.save(output_path)
+    combined_doc.save(output_path)
 
 @app.post("/api/merge/")
 async def api_merge_files(
