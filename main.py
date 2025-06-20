@@ -6,7 +6,7 @@ import zipfile
 import rarfile
 import patoolib
 from typing import List, Optional, Tuple
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -357,22 +357,40 @@ async def merge_files(
 
 @app.post("/api/merge/")
 async def api_merge_files(
-    file: UploadFile = File(None),
-    data: UploadFile = File(None),
-    archive: UploadFile = File(None),
-    output_filename: Optional[str] = Form("merged_document")
+    file: Optional[UploadFile] = File(None),
+    data: Optional[UploadFile] = File(None),
+    archive: Optional[UploadFile] = File(None),
+    output_filename: Optional[str] = Form("merged_document"),
+    request: Request = None
 ):
     """API endpoint to merge files from a ZIP or RAR archive"""
     # Get the actual file from any of the possible parameter names
     actual_file = file or data or archive
     
+    # Debug information
+    debug_info = {
+        "file_provided": file is not None,
+        "data_provided": data is not None,
+        "archive_provided": archive is not None,
+        "output_filename": output_filename,
+    }
+    
     if not actual_file:
-        raise HTTPException(status_code=400, detail="No file provided. Please upload a ZIP or RAR file using 'file', 'data', or 'archive' parameter")
+        # Try to get the file from form data directly
+        form = await request.form()
+        for key, value in form.items():
+            if isinstance(value, UploadFile):
+                actual_file = value
+                debug_info["found_in_form"] = key
+                break
+    
+    if not actual_file:
+        raise HTTPException(status_code=400, detail=f"No file provided. Debug info: {debug_info}")
     
     # Check if the file is a compressed archive
     file_ext = os.path.splitext(actual_file.filename)[1].lower()
     if file_ext not in ['.zip', '.rar']:
-        raise HTTPException(status_code=400, detail=f"Only ZIP or RAR archives are supported. Received file with extension: {file_ext}")
+        raise HTTPException(status_code=400, detail=f"Only ZIP or RAR archives are supported. Received file with extension: {file_ext}. Debug info: {debug_info}")
     
     # Create a temporary directory to store and extract files
     with tempfile.TemporaryDirectory() as temp_dir:
