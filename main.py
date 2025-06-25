@@ -14,6 +14,11 @@ import tempfile
 import zipfile
 import rarfile
 import patoolib
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PDF and DOCX Merger API")
 
@@ -74,20 +79,145 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as out:
         merger.write(out)
 
-def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> None:
+def merge_docx_files_raw(file_paths: List[str], output_path: str) -> None:
+    """
+    Fusiona archivos DOCX sin modificar su contenido interno.
+    Cada documento se inserta completo con su propio formato, estructura y encabezados.
+    """
     if not file_paths:
         raise HTTPException(status_code=400, detail="No DOCX files provided")
     
-    base = Document(file_paths[0])
+    if len(file_paths) == 1:
+        # Si solo hay un archivo, simplemente copiarlo
+        shutil.copy(file_paths[0], output_path)
+        return
     
-    for path in file_paths[1:]:
-        doc = Document(path)
-        for element in doc.element.body:
-            base.element.body.append(element)
-        # Añadir un salto de página
-        base.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    try:
+        # Crear un directorio temporal para trabajar
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extraer el primer documento como base
+            base_extract_dir = os.path.join(temp_dir, "base_doc")
+            os.makedirs(base_extract_dir, exist_ok=True)
+            
+            with zipfile.ZipFile(file_paths[0], 'r') as zip_ref:
+                zip_ref.extractall(base_extract_dir)
+            
+            # Leer el contenido del document.xml
+            document_xml_path = os.path.join(base_extract_dir, "word", "document.xml")
+            with open(document_xml_path, 'r', encoding='utf-8') as f:
+                base_content = f.read()
+            
+            # Encontrar la posición donde insertar el contenido de los otros documentos
+            # (justo antes del cierre del cuerpo del documento)
+            insert_pos = base_content.rfind("</w:body>")
+            if insert_pos == -1:
+                raise ValueError("No se pudo encontrar el final del cuerpo del documento base")
+            
+            # Preparar el contenido combinado
+            combined_content = base_content[:insert_pos]
+            
+            # Para cada documento adicional
+            for i, file_path in enumerate(file_paths[1:], 1):
+                logger.info(f"Procesando documento {i}: {os.path.basename(file_path)}")
+                
+                # Extraer el documento actual
+                doc_extract_dir = os.path.join(temp_dir, f"doc_{i}")
+                os.makedirs(doc_extract_dir, exist_ok=True)
+                
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(doc_extract_dir)
+                
+                # Leer el contenido del document.xml
+                doc_xml_path = os.path.join(doc_extract_dir, "word", "document.xml")
+                with open(doc_xml_path, 'r', encoding='utf-8') as f:
+                    doc_content = f.read()
+                
+                # Extraer solo el contenido del cuerpo (entre <w:body> y </w:body>)
+                body_start = doc_content.find("<w:body>") + len("<w:body>")
+                body_end = doc_content.rfind("</w:body>")
+                
+                if body_start == -1 or body_end == -1:
+                    raise ValueError(f"No se pudo extraer el cuerpo del documento {i}")
+                
+                body_content = doc_content[body_start:body_end]
+                
+                # Agregar un salto de página antes del contenido
+                page_break = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+                
+                # Agregar el contenido al documento combinado
+                combined_content += page_break + body_content
+                
+                # Copiar todos los archivos de word/ excepto document.xml
+                for item in os.listdir(os.path.join(doc_extract_dir, "word")):
+                    if item != "document.xml":
+                        src = os.path.join(doc_extract_dir, "word", item)
+                        dst = os.path.join(base_extract_dir, "word", f"{i}_{item}")
+                        
+                        # Copiar el archivo
+                        if os.path.isfile(src):
+                            shutil.copy(src, dst)
+                        elif os.path.isdir(src):
+                            shutil.copytree(src, dst)
+                
+                # Actualizar las relaciones
+                rels_dir = os.path.join(base_extract_dir, "word", "_rels")
+                os.makedirs(rels_dir, exist_ok=True)
+                
+                base_rels_path = os.path.join(rels_dir, "document.xml.rels")
+                doc_rels_path = os.path.join(doc_extract_dir, "word", "_rels", "document.xml.rels")
+                
+                if os.path.exists(doc_rels_path) and os.path.exists(base_rels_path):
+                    with open(base_rels_path, 'r', encoding='utf-8') as f:
+                        base_rels = f.read()
+                    
+                    with open(doc_rels_path, 'r', encoding='utf-8') as f:
+                        doc_rels = f.read()
+                    
+                    # Extraer todas las relaciones del documento actual
+                    import re
+                    rel_pattern = r'<Relationship [^>]+>'
+                    doc_rel_matches = re.findall(rel_pattern, doc_rels)
+                    
+                    # Modificar los IDs y targets para evitar conflictos
+                    modified_rels = []
+                    for rel in doc_rel_matches:
+                        # Cambiar el ID para evitar conflictos
+                        rel = rel.replace('Id="rId', f'Id="rId{i*1000}')
+                        
+                        # Cambiar el Target si apunta a un archivo que hemos renombrado
+                        if 'Target="word/' in rel:
+                            rel = rel.replace('Target="word/', f'Target="word/{i}_')
+                        
+                        modified_rels.append(rel)
+                    
+                    # Agregar las relaciones modificadas al documento base
+                    base_rels = base_rels.replace('</Relationships>', 
+                                                 ''.join(modified_rels) + '</Relationships>')
+                    
+                    # Guardar las relaciones actualizadas
+                    with open(base_rels_path, 'w', encoding='utf-8') as f:
+                        f.write(base_rels)
+            
+            # Completar el documento combinado
+            combined_content += "</w:body></w:document>"
+            
+            # Guardar el documento combinado
+            with open(document_xml_path, 'w', encoding='utf-8') as f:
+                f.write(combined_content)
+            
+            # Crear un nuevo archivo DOCX con el contenido combinado
+            with zipfile.ZipFile(output_path, 'w') as zip_out:
+                for root, _, files in os.walk(base_extract_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arc_name = os.path.relpath(file_path, base_extract_dir)
+                        zip_out.write(file_path, arc_name)
+            
+            logger.info(f"Documento combinado guardado en {output_path}")
     
-    base.save(output_path)
+    except Exception as e:
+        logger.error(f"Error al fusionar documentos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al fusionar documentos: {str(e)}")
 
 @app.post("/api/merge/")
 async def api_merge_files(
@@ -129,7 +259,7 @@ async def api_merge_files(
             merge_pdf_files(sorted_files, output_path)
             media_type = "application/pdf"
         elif ext == ".docx":
-            merge_docx_preserving_headers(sorted_files, output_path)
+            merge_docx_files_raw(sorted_files, output_path)
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type.")
