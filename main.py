@@ -114,7 +114,9 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
     """Merge multiple DOCX files into a single DOCX preserving original format and headers"""
     import logging
     import shutil
-    from docxcompose.composer import Composer
+    import tempfile
+    import zipfile
+    import os
     from docx import Document
     
     logging.info(f"Fusionando {len(file_paths)} archivos DOCX preservando formato original")
@@ -128,25 +130,172 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
         return
 
     try:
-        # Usar el primer documento como base
-        master = Document(file_paths[0])
-        composer = Composer(master)
-        
-        # Agregar cada documento adicional
-        for i, file_path in enumerate(file_paths[1:], 1):
-            logging.info(f"Agregando documento {i}: {os.path.basename(file_path)}")
-            doc = Document(file_path)
+        # Crear un directorio temporal para trabajar con los archivos
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extraer el primer documento como base
+            base_doc_path = file_paths[0]
+            base_extract_dir = os.path.join(temp_dir, "base")
+            os.makedirs(base_extract_dir, exist_ok=True)
             
-            # Usar docxcompose para agregar el documento, esto preservará el formato original
-            # y agregará automáticamente un salto de sección entre documentos
-            composer.append(doc)
-        
-        # Guardar el documento combinado
-        composer.save(output_path)
-        logging.info(f"Documento combinado guardado en {output_path}")
+            with zipfile.ZipFile(base_doc_path, 'r') as zip_ref:
+                zip_ref.extractall(base_extract_dir)
+            
+            # Crear un nuevo documento combinado
+            combined_dir = os.path.join(temp_dir, "combined")
+            shutil.copytree(base_extract_dir, combined_dir)
+            
+            # Obtener el contenido del documento base
+            with open(os.path.join(combined_dir, "word/document.xml"), 'r', encoding='utf-8') as f:
+                base_content = f.read()
+                
+            # Encontrar la posición donde insertar el contenido de los otros documentos
+            # (justo antes del cierre del cuerpo del documento)
+            insert_pos = base_content.rfind("</w:body>")
+            
+            if insert_pos == -1:
+                raise ValueError("No se pudo encontrar el final del cuerpo del documento base")
+            
+            # Preparar el contenido combinado
+            combined_content = base_content[:insert_pos]
+            
+            # Agregar cada documento adicional
+            for i, file_path in enumerate(file_paths[1:], 1):
+                logging.info(f"Agregando documento {i}: {os.path.basename(file_path)}")
+                
+                # Extraer el documento actual
+                doc_extract_dir = os.path.join(temp_dir, f"doc_{i}")
+                os.makedirs(doc_extract_dir, exist_ok=True)
+                
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(doc_extract_dir)
+                
+                # Leer el contenido del documento
+                with open(os.path.join(doc_extract_dir, "word/document.xml"), 'r', encoding='utf-8') as f:
+                    doc_content = f.read()
+                
+                # Extraer solo el contenido del cuerpo (entre <w:body> y </w:body>)
+                body_start = doc_content.find("<w:body>") + len("<w:body>")
+                body_end = doc_content.rfind("</w:body>")
+                
+                if body_start == -1 or body_end == -1:
+                    raise ValueError(f"No se pudo extraer el cuerpo del documento {i}")
+                
+                body_content = doc_content[body_start:body_end]
+                
+                # Agregar un salto de página antes del contenido
+                page_break = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+                
+                # Agregar el contenido al documento combinado
+                combined_content += page_break + body_content
+                
+                # Copiar los estilos y relaciones del documento actual
+                # (esto asegura que los encabezados y formatos se preserven)
+                for item in os.listdir(os.path.join(doc_extract_dir, "word")):
+                    if item.startswith("header") or item.startswith("footer") or item == "styles.xml":
+                        src = os.path.join(doc_extract_dir, "word", item)
+                        dst = os.path.join(combined_dir, "word", f"{i}_{item}")
+                        shutil.copy(src, dst)
+                        
+                        # Actualizar el archivo de relaciones para incluir estos archivos
+                        rels_file = os.path.join(combined_dir, "word", "_rels", "document.xml.rels")
+                        if os.path.exists(rels_file):
+                            with open(rels_file, 'r', encoding='utf-8') as f:
+                                rels_content = f.read()
+                            
+                            # Agregar una nueva relación para este archivo
+                            rel_id = f"rId{1000 + i}_{item.split('.')[0]}"
+                            new_rel = f'<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="word/{i}_{item}"/>'
+                            
+                            # Insertar antes del cierre de las relaciones
+                            insert_rel_pos = rels_content.rfind("</Relationships>")
+                            if insert_rel_pos != -1:
+                                rels_content = rels_content[:insert_rel_pos] + new_rel + rels_content[insert_rel_pos:]
+                                
+                                with open(rels_file, 'w', encoding='utf-8') as f:
+                                    f.write(rels_content)
+            
+            # Completar el documento combinado
+            combined_content += "</w:body></w:document>"
+            
+            # Escribir el contenido combinado al archivo
+            with open(os.path.join(combined_dir, "word/document.xml"), 'w', encoding='utf-8') as f:
+                f.write(combined_content)
+            
+            # Crear un nuevo archivo ZIP (DOCX) con el contenido combinado
+            with zipfile.ZipFile(output_path, 'w') as zip_out:
+                for root, _, files in os.walk(combined_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arc_name = os.path.relpath(file_path, combined_dir)
+                        zip_out.write(file_path, arc_name)
+            
+            logging.info(f"Documento combinado guardado en {output_path}")
     except Exception as e:
         logging.error(f"Error al fusionar documentos: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al fusionar documentos: {str(e)}")
+        # Intentar con el enfoque alternativo si el principal falla
+        try:
+            logging.info("Intentando método alternativo de fusión...")
+            result = merge_docx_files_simple(file_paths, output_path)
+            return result
+        except Exception as e2:
+            logging.error(f"Error en método alternativo: {str(e2)}")
+            raise HTTPException(status_code=500, detail=f"Error al fusionar documentos: {str(e)}")
+
+def merge_docx_files_simple(file_paths: List[str], output_path: str) -> None:
+    """Método alternativo más simple para fusionar documentos DOCX"""
+    import logging
+    import shutil
+    import docx
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+    
+    if not file_paths:
+        return
+        
+    if len(file_paths) == 1:
+        shutil.copy(file_paths[0], output_path)
+        return
+        
+    try:
+        # Crear un nuevo documento
+        master = Document()
+        
+        # Para cada documento
+        for i, path in enumerate(file_paths):
+            doc = Document(path)
+            
+            # Si no es el primer documento, agregar un salto de página
+            if i > 0:
+                paragraph = master.add_paragraph()
+                run = paragraph.add_run()
+                run.add_break(WD_BREAK.PAGE)
+            
+            # Copiar cada párrafo
+            for para in doc.paragraphs:
+                p = master.add_paragraph()
+                for run in para.runs:
+                    r = p.add_run(run.text)
+                    r.bold = run.bold
+                    r.italic = run.italic
+                    r.underline = run.underline
+                    r.font.name = run.font.name
+                    if run.font.size:
+                        r.font.size = run.font.size
+            
+            # Copiar cada tabla
+            for table in doc.tables:
+                new_table = master.add_table(rows=len(table.rows), cols=len(table.columns))
+                for i, row in enumerate(table.rows):
+                    for j, cell in enumerate(row.cells):
+                        if cell.text:
+                            new_table.cell(i, j).text = cell.text
+        
+        # Guardar el documento combinado
+        master.save(output_path)
+        logging.info(f"Documento combinado guardado en {output_path} (método simple)")
+        return True
+    except Exception as e:
+        logging.error(f"Error en método simple: {str(e)}")
         raise
 
 @app.post("/api/merge/")
