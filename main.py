@@ -137,7 +137,8 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
             doc = docx.Document(file_path)
             
             # Agregar un salto de página antes de cada documento adicional
-            composer.add_doc(doc, True)
+            # Usar append() en lugar de add_doc() que no existe
+            composer.append(doc)
         
         # Guardar el documento combinado
         logging.info(f"Guardando documento combinado en {output_path}")
