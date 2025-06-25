@@ -79,15 +79,15 @@ def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> No
         raise HTTPException(status_code=400, detail="No DOCX files provided")
     
     base = Document(file_paths[0])
-    composer = Composer(base)
     
     for path in file_paths[1:]:
         doc = Document(path)
-        composer.append(doc)
-        # Añadir un salto de página al final de cada documento
+        for element in doc.element.body:
+            base.element.body.append(element)
+        # Añadir un salto de página
         base.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
     
-    composer.save(output_path)
+    base.save(output_path)
 
 @app.post("/api/merge/")
 async def api_merge_files(
