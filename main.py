@@ -138,9 +138,9 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
         def add_page_break(doc):
             paragraph = doc.add_paragraph()
             run = paragraph.add_run()
-            run._r.append(OxmlElement('w:br'))
-            run._r.append(OxmlElement('w:br'))
-            run._r.last.set(qn('w:type'), 'page')
+            br = OxmlElement('w:br')
+            br.set(qn('w:type'), 'page')
+            run._r.append(br)
         
         # Agregar cada documento adicional
         for i, file_path in enumerate(file_paths[1:], 1):
