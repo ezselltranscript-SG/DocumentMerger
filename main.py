@@ -79,10 +79,10 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as out:
         merger.write(out)
 
-def merge_docx_files_raw(file_paths: List[str], output_path: str) -> None:
+def merge_docx_with_sections(file_paths: List[str], output_path: str) -> None:
     """
-    Fusiona archivos DOCX sin modificar su contenido interno.
-    Cada documento se inserta completo con su propio formato, estructura y encabezados.
+    Fusiona archivos DOCX manteniendo cada documento como una sección independiente
+    con su propio encabezado, formato y estructura.
     """
     if not file_paths:
         raise HTTPException(status_code=400, detail="No DOCX files provided")
@@ -95,122 +95,176 @@ def merge_docx_files_raw(file_paths: List[str], output_path: str) -> None:
     try:
         # Crear un directorio temporal para trabajar
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Extraer el primer documento como base
-            base_extract_dir = os.path.join(temp_dir, "base_doc")
-            os.makedirs(base_extract_dir, exist_ok=True)
+            # Directorio para el documento combinado
+            combined_dir = os.path.join(temp_dir, "combined")
+            os.makedirs(combined_dir, exist_ok=True)
+            os.makedirs(os.path.join(combined_dir, "word"), exist_ok=True)
+            os.makedirs(os.path.join(combined_dir, "word", "_rels"), exist_ok=True)
             
-            with zipfile.ZipFile(file_paths[0], 'r') as zip_ref:
-                zip_ref.extractall(base_extract_dir)
+            # Inicializar el contenido del documento combinado
+            combined_document = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            combined_document += '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            combined_document += 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n'
+            combined_document += '<w:body>\n'
             
-            # Leer el contenido del document.xml
-            document_xml_path = os.path.join(base_extract_dir, "word", "document.xml")
-            with open(document_xml_path, 'r', encoding='utf-8') as f:
-                base_content = f.read()
+            # Inicializar las relaciones
+            combined_rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            combined_rels += '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
             
-            # Encontrar la posición donde insertar el contenido de los otros documentos
-            # (justo antes del cierre del cuerpo del documento)
-            insert_pos = base_content.rfind("</w:body>")
-            if insert_pos == -1:
-                raise ValueError("No se pudo encontrar el final del cuerpo del documento base")
+            # Contador para IDs de relación
+            rel_id_counter = 1
             
-            # Preparar el contenido combinado
-            combined_content = base_content[:insert_pos]
-            
-            # Para cada documento adicional
-            for i, file_path in enumerate(file_paths[1:], 1):
-                logger.info(f"Procesando documento {i}: {os.path.basename(file_path)}")
+            # Procesar cada documento
+            for doc_index, file_path in enumerate(file_paths):
+                logger.info(f"Procesando documento {doc_index}: {os.path.basename(file_path)}")
                 
-                # Extraer el documento actual
-                doc_extract_dir = os.path.join(temp_dir, f"doc_{i}")
-                os.makedirs(doc_extract_dir, exist_ok=True)
+                # Directorio para extraer el documento actual
+                doc_dir = os.path.join(temp_dir, f"doc_{doc_index}")
+                os.makedirs(doc_dir, exist_ok=True)
                 
+                # Extraer el documento
                 with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(doc_extract_dir)
+                    zip_ref.extractall(doc_dir)
                 
-                # Leer el contenido del document.xml
-                doc_xml_path = os.path.join(doc_extract_dir, "word", "document.xml")
+                # Agregar salto de página entre documentos (excepto el primero)
+                if doc_index > 0:
+                    combined_document += '<w:p>\n<w:r>\n<w:br w:type="page"/>\n</w:r>\n</w:p>\n'
+                
+                # Agregar salto de sección para cada documento
+                if doc_index > 0:
+                    # Agregar un salto de sección que inicia una nueva sección
+                    combined_document += '<w:sectPr>\n'
+                    combined_document += '  <w:type w:val="nextPage"/>\n'
+                    combined_document += '</w:sectPr>\n'
+                
+                # Leer el contenido del documento
+                doc_xml_path = os.path.join(doc_dir, "word", "document.xml")
                 with open(doc_xml_path, 'r', encoding='utf-8') as f:
                     doc_content = f.read()
                 
-                # Extraer solo el contenido del cuerpo (entre <w:body> y </w:body>)
+                # Extraer el cuerpo del documento
                 body_start = doc_content.find("<w:body>") + len("<w:body>")
                 body_end = doc_content.rfind("</w:body>")
                 
                 if body_start == -1 or body_end == -1:
-                    raise ValueError(f"No se pudo extraer el cuerpo del documento {i}")
+                    raise ValueError(f"No se pudo extraer el cuerpo del documento {doc_index}")
                 
                 body_content = doc_content[body_start:body_end]
                 
-                # Agregar un salto de página antes del contenido
-                page_break = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+                # Encontrar y extraer la configuración de sección (sectPr)
+                sect_pr_start = body_content.rfind("<w:sectPr")
+                sect_pr_end = body_content.rfind("</w:sectPr>") + len("</w:sectPr>")
                 
-                # Agregar el contenido al documento combinado
-                combined_content += page_break + body_content
+                if sect_pr_start != -1 and sect_pr_end != -1:
+                    sect_pr = body_content[sect_pr_start:sect_pr_end]
+                    # Eliminar la configuración de sección del cuerpo para agregarla después
+                    body_content = body_content[:sect_pr_start] + body_content[sect_pr_end:]
+                else:
+                    sect_pr = "<w:sectPr></w:sectPr>"
                 
-                # Copiar todos los archivos de word/ excepto document.xml
-                for item in os.listdir(os.path.join(doc_extract_dir, "word")):
-                    if item != "document.xml":
-                        src = os.path.join(doc_extract_dir, "word", item)
-                        dst = os.path.join(base_extract_dir, "word", f"{i}_{item}")
+                # Copiar los encabezados y pies de página
+                word_dir = os.path.join(doc_dir, "word")
+                for item in os.listdir(word_dir):
+                    # Copiar encabezados, pies de página y estilos
+                    if item.startswith("header") or item.startswith("footer") or item == "styles.xml":
+                        src_path = os.path.join(word_dir, item)
+                        dst_name = f"{doc_index}_{item}"
+                        dst_path = os.path.join(combined_dir, "word", dst_name)
                         
                         # Copiar el archivo
-                        if os.path.isfile(src):
-                            shutil.copy(src, dst)
-                        elif os.path.isdir(src):
-                            shutil.copytree(src, dst)
-                
-                # Actualizar las relaciones
-                rels_dir = os.path.join(base_extract_dir, "word", "_rels")
-                os.makedirs(rels_dir, exist_ok=True)
-                
-                base_rels_path = os.path.join(rels_dir, "document.xml.rels")
-                doc_rels_path = os.path.join(doc_extract_dir, "word", "_rels", "document.xml.rels")
-                
-                if os.path.exists(doc_rels_path) and os.path.exists(base_rels_path):
-                    with open(base_rels_path, 'r', encoding='utf-8') as f:
-                        base_rels = f.read()
-                    
-                    with open(doc_rels_path, 'r', encoding='utf-8') as f:
-                        doc_rels = f.read()
-                    
-                    # Extraer todas las relaciones del documento actual
-                    import re
-                    rel_pattern = r'<Relationship [^>]+>'
-                    doc_rel_matches = re.findall(rel_pattern, doc_rels)
-                    
-                    # Modificar los IDs y targets para evitar conflictos
-                    modified_rels = []
-                    for rel in doc_rel_matches:
-                        # Cambiar el ID para evitar conflictos
-                        rel = rel.replace('Id="rId', f'Id="rId{i*1000}')
+                        shutil.copy(src_path, dst_path)
                         
-                        # Cambiar el Target si apunta a un archivo que hemos renombrado
-                        if 'Target="word/' in rel:
-                            rel = rel.replace('Target="word/', f'Target="word/{i}_')
-                        
-                        modified_rels.append(rel)
-                    
-                    # Agregar las relaciones modificadas al documento base
-                    base_rels = base_rels.replace('</Relationships>', 
-                                                 ''.join(modified_rels) + '</Relationships>')
-                    
-                    # Guardar las relaciones actualizadas
-                    with open(base_rels_path, 'w', encoding='utf-8') as f:
-                        f.write(base_rels)
+                        # Actualizar las referencias en la configuración de sección
+                        if item.startswith("header") or item.startswith("footer"):
+                            # Crear una nueva relación para este encabezado/pie de página
+                            rel_id = f"rId{rel_id_counter}"
+                            rel_id_counter += 1
+                            
+                            # Determinar el tipo de relación
+                            rel_type = "header" if item.startswith("header") else "footer"
+                            
+                            # Agregar la relación al archivo de relaciones
+                            combined_rels += f'<Relationship Id="{rel_id}" '
+                            combined_rels += f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{rel_type}" '
+                            combined_rels += f'Target="word/{dst_name}"/>\n'
+                            
+                            # Actualizar la referencia en sectPr
+                            old_ref = f'r:id="rId[0-9]+"'
+                            new_ref = f'r:id="{rel_id}"'
+                            
+                            # Buscar referencias al encabezado/pie de página en la configuración de sección
+                            import re
+                            if re.search(f'<w:{rel_type}[^>]*{old_ref}', sect_pr):
+                                sect_pr = re.sub(f'(<w:{rel_type}[^>]*){old_ref}', f'\\1{new_ref}', sect_pr)
+                
+                # Copiar las relaciones del documento
+                doc_rels_path = os.path.join(doc_dir, "word", "_rels")
+                if os.path.exists(doc_rels_path):
+                    for item in os.listdir(doc_rels_path):
+                        if item != "document.xml.rels":
+                            src_path = os.path.join(doc_rels_path, item)
+                            dst_path = os.path.join(combined_dir, "word", "_rels", f"{doc_index}_{item}")
+                            shutil.copy(src_path, dst_path)
+                
+                # Copiar otros archivos necesarios (imágenes, etc.)
+                for root, _, files in os.walk(word_dir):
+                    for file in files:
+                        if not (file.startswith("header") or file.startswith("footer") or 
+                                file == "document.xml" or file == "styles.xml"):
+                            rel_path = os.path.relpath(os.path.join(root, file), word_dir)
+                            src_path = os.path.join(root, file)
+                            dst_path = os.path.join(combined_dir, "word", f"{doc_index}_{rel_path}")
+                            
+                            # Crear directorios si es necesario
+                            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                            
+                            # Copiar el archivo
+                            if os.path.isfile(src_path):
+                                shutil.copy(src_path, dst_path)
+                
+                # Agregar el contenido del cuerpo al documento combinado
+                combined_document += body_content
+                
+                # Agregar la configuración de sección al final de cada documento
+                # excepto para el último documento que tendrá su propia configuración al final
+                if doc_index < len(file_paths) - 1:
+                    combined_document += sect_pr + '\n'
+                else:
+                    # Para el último documento, guardar la configuración para agregarla al final
+                    last_sect_pr = sect_pr
             
-            # Completar el documento combinado
-            combined_content += "</w:body></w:document>"
+            # Finalizar el documento combinado
+            combined_document += last_sect_pr + '\n'
+            combined_document += '</w:body>\n</w:document>'
+            
+            # Finalizar el archivo de relaciones
+            combined_rels += '</Relationships>'
             
             # Guardar el documento combinado
-            with open(document_xml_path, 'w', encoding='utf-8') as f:
-                f.write(combined_content)
+            with open(os.path.join(combined_dir, "word", "document.xml"), 'w', encoding='utf-8') as f:
+                f.write(combined_document)
             
-            # Crear un nuevo archivo DOCX con el contenido combinado
+            # Guardar el archivo de relaciones
+            with open(os.path.join(combined_dir, "word", "_rels", "document.xml.rels"), 'w', encoding='utf-8') as f:
+                f.write(combined_rels)
+            
+            # Copiar archivos necesarios del primer documento para la estructura básica
+            base_files = ["[Content_Types].xml", "_rels/.rels"]
+            for file_path in file_paths:
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    for base_file in base_files:
+                        try:
+                            zip_ref.extract(base_file, combined_dir)
+                            break  # Si se extrajo correctamente, salir del bucle
+                        except KeyError:
+                            continue  # Si no existe, probar con el siguiente documento
+            
+            # Crear el archivo DOCX final
             with zipfile.ZipFile(output_path, 'w') as zip_out:
-                for root, _, files in os.walk(base_extract_dir):
+                for root, _, files in os.walk(combined_dir):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        arc_name = os.path.relpath(file_path, base_extract_dir)
+                        arc_name = os.path.relpath(file_path, combined_dir)
                         zip_out.write(file_path, arc_name)
             
             logger.info(f"Documento combinado guardado en {output_path}")
@@ -259,7 +313,7 @@ async def api_merge_files(
             merge_pdf_files(sorted_files, output_path)
             media_type = "application/pdf"
         elif ext == ".docx":
-            merge_docx_files_raw(sorted_files, output_path)
+            merge_docx_with_sections(sorted_files, output_path)
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type.")
