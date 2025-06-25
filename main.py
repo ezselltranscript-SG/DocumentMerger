@@ -5,6 +5,7 @@ from typing import List, Optional
 from pypdf import PdfWriter, PdfReader
 from docx import Document
 from docxcompose.composer import Composer
+from docx.enum.text import WD_BREAK
 
 import os
 import re
@@ -102,10 +103,14 @@ def merge_docx_simple(file_paths: List[str], output_path: str) -> None:
             logger.info(f"Agregando documento {i}: {os.path.basename(file_path)}")
             doc = Document(file_path)
             
-            # Asegurar que cada documento comience en una nueva página
-            # docxcompose inserta automáticamente un salto de sección, pero necesitamos
-            # asegurarnos de que sea un salto de página también
-            composer.append(doc, add_page_break=True)
+            # Agregar un salto de página antes de cada documento
+            # Primero agregamos un párrafo vacío al documento principal
+            p = master.add_paragraph()
+            run = p.add_run()
+            run.add_break(WD_BREAK.PAGE)
+            
+            # Luego agregamos el documento
+            composer.append(doc)
         
         # Guardar el documento combinado
         composer.save(output_path)
