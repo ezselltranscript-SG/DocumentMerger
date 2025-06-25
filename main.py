@@ -5,6 +5,7 @@ from typing import List, Optional
 from pypdf import PdfWriter, PdfReader
 from docx import Document
 from docxcompose.composer import Composer
+from docx.enum.text import WD_BREAK
 
 import os
 import re
@@ -77,11 +78,11 @@ def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> No
     if not file_paths:
         raise HTTPException(status_code=400, detail="No DOCX files provided")
     base = Document(file_paths[0])
-    composer = Composer(base)
+    composer = Composer(base, docx_template=file_paths[0])
     for path in file_paths[1:]:
         doc = Document(path)
-        # Añadir un salto de página antes de agregar el documento
-        composer.add_page_break()
+        # Añadir un salto de página al documento base
+        base.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
         composer.append(doc)
     composer.save(output_path)
 
