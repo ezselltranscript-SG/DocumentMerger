@@ -113,9 +113,13 @@ def filter_files_by_extension(file_paths: List[str], extensions: List[str]) -> L
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
     """Merge multiple DOCX files into a single DOCX preservando formato y encabezados exactamente como están"""
     import logging
-    from docxcompose.composer import Composer
+    import tempfile
+    from docx.enum.section import WD_SECTION_START
+    from docx.shared import Inches
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     
-    logging.info(f"Fusionando {len(file_paths)} archivos DOCX usando docxcompose")
+    logging.info(f"Fusionando {len(file_paths)} archivos DOCX preservando encabezados y páginas")
     logging.info(f"Archivos a fusionar: {[os.path.basename(f) for f in file_paths]}")
     
     if not file_paths:
@@ -127,22 +131,132 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
         return
     
     try:
-        # Crear un compositor usando el primer documento como base
-        master = docx.Document(file_paths[0])
-        composer = Composer(master)
+        # Crear un documento nuevo para la combinación
+        combined_doc = docx.Document()
         
-        # Agregar cada documento adicional
-        for i, file_path in enumerate(file_paths[1:], 1):
-            logging.info(f"Agregando documento {i+1}: {os.path.basename(file_path)}")
+        # Procesar cada documento
+        for i, file_path in enumerate(file_paths):
+            logging.info(f"Procesando documento {i+1}: {os.path.basename(file_path)}")
             doc = docx.Document(file_path)
             
-            # Agregar un salto de página antes de cada documento adicional
-            # Usar append() en lugar de add_doc() que no existe
-            composer.append(doc)
+            # Agregar un salto de sección antes de cada documento excepto el primero
+            if i > 0:
+                # Agregar un salto de sección de página nueva
+                combined_doc.add_section(WD_SECTION_START.NEW_PAGE)
+            
+            # Copiar todos los párrafos del documento actual
+            for para in doc.paragraphs:
+                # Crear un nuevo párrafo en el documento combinado
+                new_para = combined_doc.add_paragraph()
+                
+                # Copiar el estilo y formato del párrafo
+                if para.style:
+                    new_para.style = para.style
+                
+                # Copiar el formato del párrafo
+                if hasattr(para, 'paragraph_format'):
+                    if para.paragraph_format.alignment:
+                        new_para.paragraph_format.alignment = para.paragraph_format.alignment
+                    if para.paragraph_format.left_indent:
+                        new_para.paragraph_format.left_indent = para.paragraph_format.left_indent
+                    if para.paragraph_format.right_indent:
+                        new_para.paragraph_format.right_indent = para.paragraph_format.right_indent
+                    if para.paragraph_format.space_before:
+                        new_para.paragraph_format.space_before = para.paragraph_format.space_before
+                    if para.paragraph_format.space_after:
+                        new_para.paragraph_format.space_after = para.paragraph_format.space_after
+                
+                # Copiar cada run con su formato
+                for run in para.runs:
+                    new_run = new_para.add_run(run.text)
+                    
+                    # Copiar formato básico
+                    new_run.bold = run.bold
+                    new_run.italic = run.italic
+                    new_run.underline = run.underline
+                    if hasattr(run, 'strike'):
+                        new_run.strike = run.strike
+                    
+                    # Copiar fuente y tamaño
+                    if run.font.name:
+                        new_run.font.name = run.font.name
+                    if run.font.size:
+                        new_run.font.size = run.font.size
+                    
+                    # Copiar color
+                    if run.font.color.rgb:
+                        new_run.font.color.rgb = run.font.color.rgb
+            
+            # Copiar tablas
+            for table in doc.tables:
+                # Crear una nueva tabla con las mismas dimensiones
+                rows = len(table.rows)
+                cols = len(table.columns) if rows > 0 else 0
+                new_table = combined_doc.add_table(rows=rows, cols=cols)
+                
+                # Copiar estilo de tabla
+                if hasattr(table, 'style') and table.style:
+                    new_table.style = table.style
+                
+                # Copiar contenido de celdas
+                for i, row in enumerate(table.rows):
+                    for j, cell in enumerate(row.cells):
+                        if i < len(new_table.rows) and j < len(new_table.rows[i].cells):
+                            # Copiar texto y formato de la celda
+                            target_cell = new_table.rows[i].cells[j]
+                            target_cell.text = cell.text
+            
+            # Copiar configuración de sección (márgenes, tamaño de página, etc.)
+            if doc.sections and combined_doc.sections:
+                for j, section in enumerate(doc.sections):
+                    if j < len(combined_doc.sections):
+                        target_section = combined_doc.sections[j]
+                        # Copiar márgenes
+                        target_section.top_margin = section.top_margin
+                        target_section.bottom_margin = section.bottom_margin
+                        target_section.left_margin = section.left_margin
+                        target_section.right_margin = section.right_margin
+                        # Copiar tamaño de página
+                        target_section.page_height = section.page_height
+                        target_section.page_width = section.page_width
+            
+            # Copiar encabezados y pies de página
+            if i < len(combined_doc.sections):
+                target_section = combined_doc.sections[i]
+                
+                # Copiar encabezados
+                for section in doc.sections:
+                    if section.header.is_linked_to_previous == False:
+                        # Desvinculamos el encabezado para que sea independiente
+                        target_section.header.is_linked_to_previous = False
+                        
+                        # Copiar el contenido del encabezado
+                        for para in section.header.paragraphs:
+                            header_para = target_section.header.add_paragraph()
+                            for run in para.runs:
+                                header_run = header_para.add_run(run.text)
+                                if run.font.name:
+                                    header_run.font.name = run.font.name
+                                if run.font.size:
+                                    header_run.font.size = run.font.size
+                                header_run.bold = run.bold
+                                header_run.italic = run.italic
+                    
+                    # Copiar pies de página
+                    if section.footer.is_linked_to_previous == False:
+                        target_section.footer.is_linked_to_previous = False
+                        for para in section.footer.paragraphs:
+                            footer_para = target_section.footer.add_paragraph()
+                            for run in para.runs:
+                                footer_run = footer_para.add_run(run.text)
+                                if run.font.name:
+                                    footer_run.font.name = run.font.name
+                                if run.font.size:
+                                    footer_run.font.size = run.font.size
         
         # Guardar el documento combinado
         logging.info(f"Guardando documento combinado en {output_path}")
-        composer.save(output_path)
+        combined_doc.save(output_path)
         logging.info("Documento guardado exitosamente")
     
     except Exception as e:
