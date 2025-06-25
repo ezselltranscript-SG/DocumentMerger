@@ -78,7 +78,7 @@ def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> No
     if not file_paths:
         raise HTTPException(status_code=400, detail="No DOCX files provided")
     base = Document(file_paths[0])
-    composer = Composer(base, docx_template=file_paths[0])
+    composer = Composer(base)
     for path in file_paths[1:]:
         doc = Document(path)
         # Añadir un salto de página al documento base
