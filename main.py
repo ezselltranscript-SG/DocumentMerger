@@ -5,6 +5,7 @@ from typing import List, Optional
 from pypdf import PdfWriter, PdfReader
 from docx import Document
 from docx.enum.text import WD_BREAK
+from docxcompose.composer import Composer
 
 import os
 import re
@@ -78,18 +79,15 @@ def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> No
         raise HTTPException(status_code=400, detail="No DOCX files provided")
     
     base = Document(file_paths[0])
+    composer = Composer(base)
     
     for path in file_paths[1:]:
         doc = Document(path)
-        for element in doc.element.body:
-            base.element.body.append(element)
-        # Copiar encabezados y pies de página
-        for section in doc.sections:
-            base_section = base.add_section()
-            base_section.header = section.header
-            base_section.footer = section.footer
+        composer.append(doc)
+        # Añadir un salto de página al final de cada documento
+        base.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
     
-    base.save(output_path)
+    composer.save(output_path)
 
 @app.post("/api/merge/")
 async def api_merge_files(
