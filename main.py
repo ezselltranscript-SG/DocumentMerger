@@ -230,13 +230,12 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
                             rel_id = f"rId{1000 + i}_{item.split('.')[0]}"
                             new_rel = f'<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="word/{i}_{item}"/>'
                             
-                            # Insertar antes del cierre de las relaciones
-                            insert_rel_pos = rels_content.rfind("</Relationships>")
-                            if insert_rel_pos != -1:
-                                rels_content = rels_content[:insert_rel_pos] + new_rel + rels_content[insert_rel_pos:]
-                                
-                                with open(rels_file, 'w', encoding='utf-8') as f:
-                                    f.write(rels_content)
+                            # Añadir la nueva relación al contenido de relaciones
+                            rels_content = rels_content.replace('</Relationships>', f'    {new_rel}\n</Relationships>')
+                            
+                            # Guardar el archivo de relaciones modificado
+                            with open(rels_file, 'w', encoding='utf-8') as f:
+                                f.write(rels_content)
             
             # Completar el documento combinado
             combined_content += "</w:body></w:document>"
