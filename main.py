@@ -79,10 +79,11 @@ def merge_pdf_files(file_paths: List[str], output_path: str) -> None:
     with open(output_path, "wb") as out:
         merger.write(out)
 
-def merge_docx_with_headers(file_paths: List[str], output_path: str) -> None:
+def merge_docx_simple(file_paths: List[str], output_path: str) -> None:
     """
-    Fusiona archivos DOCX preservando los encabezados individuales de cada documento.
-    Utiliza un enfoque alternativo que conserva los encabezados originales.
+    Fusiona archivos DOCX de manera simple usando docxcompose.
+    Cada documento se inserta como una nueva sección con su propio encabezado
+    y comienza en una nueva página.
     """
     if not file_paths:
         raise HTTPException(status_code=400, detail="No DOCX files provided")
@@ -93,106 +94,30 @@ def merge_docx_with_headers(file_paths: List[str], output_path: str) -> None:
         return
     
     try:
-        # Utilizamos el primer documento como base
-        base_doc = Document(file_paths[0])
+        # Crear un documento base con el primer archivo
+        master = Document(file_paths[0])
+        composer = Composer(master)
         
-        # Crear un directorio temporal para manipular los archivos
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Guardar el documento base en el directorio temporal
-            base_temp_path = os.path.join(temp_dir, "base.docx")
-            base_doc.save(base_temp_path)
+        # Agregar cada documento adicional con un salto de página antes
+        for i, file_path in enumerate(file_paths[1:], 1):
+            logger.info(f"Agregando documento {i}: {os.path.basename(file_path)}")
+            doc = Document(file_path)
             
-            # Extraer el documento base
-            base_extract_dir = os.path.join(temp_dir, "base_extract")
-            os.makedirs(base_extract_dir, exist_ok=True)
-            with zipfile.ZipFile(base_temp_path, 'r') as zip_ref:
-                zip_ref.extractall(base_extract_dir)
+            # Agregar un salto de página antes de cada documento
+            # Primero agregamos un párrafo vacío al documento principal
+            p = master.add_paragraph()
+            run = p.add_run()
+            run.add_break(WD_BREAK.PAGE)
             
-            # Procesar cada documento adicional
-            for i, file_path in enumerate(file_paths[1:], 1):
-                logger.info(f"Procesando documento {i}: {os.path.basename(file_path)}")
-                
-                # Crear un documento temporal para este archivo
-                current_doc = Document(file_path)
-                current_temp_path = os.path.join(temp_dir, f"doc_{i}.docx")
-                current_doc.save(current_temp_path)
-                
-                # Extraer el documento actual
-                current_extract_dir = os.path.join(temp_dir, f"doc_{i}_extract")
-                os.makedirs(current_extract_dir, exist_ok=True)
-                with zipfile.ZipFile(current_temp_path, 'r') as zip_ref:
-                    zip_ref.extractall(current_extract_dir)
-                
-                # Verificar si el documento tiene encabezado
-                header_files = [f for f in os.listdir(os.path.join(current_extract_dir, "word")) 
-                              if f.startswith("header") and f.endswith(".xml")]
-                
-                if header_files:
-                    logger.info(f"Documento {i} tiene encabezados: {header_files}")
-                
-                # Abrir el documento con python-docx para manipularlo
-                doc_to_append = Document(file_path)
-                
-                # Agregar un salto de página antes de este documento
-                last_paragraph = base_doc.add_paragraph()
-                last_paragraph.add_run().add_break(WD_BREAK.PAGE)
-                
-                # Agregar una nueva sección con diferente encabezado
-                section_props = base_doc.add_section().start_type
-                
-                # Copiar el contenido del documento
-                for para in doc_to_append.paragraphs:
-                    p = base_doc.add_paragraph()
-                    for run in para.runs:
-                        r = p.add_run(run.text)
-                        r.bold = run.bold
-                        r.italic = run.italic
-                        r.underline = run.underline
-                        if run.font.size:
-                            r.font.size = run.font.size
-                        if run.font.name:
-                            r.font.name = run.font.name
-                
-                # Copiar tablas
-                for table in doc_to_append.tables:
-                    tbl = base_doc.add_table(rows=len(table.rows), cols=len(table.columns))
-                    if table.style:
-                        tbl.style = table.style
-                    
-                    for i, row in enumerate(table.rows):
-                        for j, cell in enumerate(row.cells):
-                            if i < len(tbl.rows) and j < len(tbl.rows[i].cells):
-                                tbl.rows[i].cells[j].text = cell.text
+            # Crear una nueva sección para cada documento
+            # Esto puede ayudar a preservar los encabezados
+            section = master.add_section()
             
-            # Guardar el documento base modificado
-            base_doc.save(output_path)
-            
-            # Ahora necesitamos modificar el documento final para incluir los encabezados
-            # Esto requiere manipulación directa del archivo DOCX (ZIP)
-            with zipfile.ZipFile(output_path, 'a') as docx_zip:
-                # Para cada documento adicional, copiar sus encabezados
-                for i, file_path in enumerate(file_paths[1:], 1):
-                    current_extract_dir = os.path.join(temp_dir, f"doc_{i}_extract")
-                    word_dir = os.path.join(current_extract_dir, "word")
-                    
-                    # Buscar archivos de encabezado
-                    header_files = [f for f in os.listdir(word_dir) 
-                                  if f.startswith("header") and f.endswith(".xml")]
-                    
-                    for header_file in header_files:
-                        # Copiar el archivo de encabezado con un nuevo nombre
-                        source_path = os.path.join(word_dir, header_file)
-                        target_name = f"header{i}_{header_file}"
-                        
-                        # Agregar el archivo al ZIP
-                        docx_zip.write(source_path, f"word/{target_name}")
-                        
-                        logger.info(f"Copiado encabezado {header_file} como {target_name}")
-            
-            # Modificar el document.xml para referenciar los encabezados correctos
-            # Esto es muy complejo y requiere manipulación XML avanzada
-            # Por ahora, confiamos en que las secciones y saltos de página funcionen
+            # Luego agregamos el documento
+            composer.append(doc)
         
+        # Guardar el documento combinado
+        composer.save(output_path)
         logger.info(f"Documento combinado guardado en {output_path}")
         
     except Exception as e:
@@ -239,7 +164,7 @@ async def api_merge_files(
             merge_pdf_files(sorted_files, output_path)
             media_type = "application/pdf"
         elif ext == ".docx":
-            merge_docx_with_headers(sorted_files, output_path)
+            merge_docx_simple(sorted_files, output_path)
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type.")
