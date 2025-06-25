@@ -195,30 +195,15 @@ def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
                         src = os.path.join(doc_extract_dir, "word", item)
                         dst = os.path.join(combined_dir, "word", f"{i}_{item}")
                         
-                        # Modificar el contenido del encabezado para cambiar Part1 por Part2, Part3, etc.
-                        if item.startswith("header"):
-                            with open(src, 'r', encoding='utf-8') as f:
-                                header_content = f.read()
-                            
-                            # Buscar diferentes patrones de Part1 y reemplazarlos
-                            import re
-                            # Patrón para encontrar "Part1" al final de una cadena o seguido de espacio/guión/punto
-                            patterns = [
-                                r'(Part)1(\s|$|\.|\-|_)',  # Part1 seguido de espacio, fin, punto, guión o guión bajo
-                                r'(_Part)1(\s|$|\.|\-|_)',  # _Part1 seguido de espacio, fin, punto, guión o guión bajo
-                                r'(\-Part)1(\s|$|\.|\-|_)',  # -Part1 seguido de espacio, fin, punto, guión o guión bajo
-                                r'(\sPart)1(\s|$|\.|\-|_)'   # espacio+Part1 seguido de espacio, fin, punto, guión o guión bajo
-                            ]
-                            
-                            for pattern in patterns:
-                                header_content = re.sub(pattern, f'\g<1>{i+1}\g<2>', header_content)
-                            
-                            # Escribir el contenido modificado
-                            with open(dst, 'w', encoding='utf-8') as f:
-                                f.write(header_content)
-                        else:
-                            # Para otros archivos, simplemente copiar
-                            shutil.copy(src, dst)
+                        # No modificar el contenido del encabezado, solo copiar
+                        with open(src, 'r', encoding='utf-8') as f:
+                            header_content = f.read()
+                        
+                        with open(dst, 'w', encoding='utf-8') as f:
+                            f.write(header_content)
+                    else:
+                        # Para otros archivos, simplemente copiar
+                        shutil.copy(src, dst)
                         
                         # Actualizar el archivo de relaciones para incluir estos archivos
                         rels_file = os.path.join(combined_dir, "word", "_rels", "document.xml.rels")
