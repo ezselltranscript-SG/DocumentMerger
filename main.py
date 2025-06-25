@@ -111,61 +111,42 @@ def filter_files_by_extension(file_paths: List[str], extensions: List[str]) -> L
 
 # Helper function to merge DOCX files
 def merge_docx_files_custom(file_paths: List[str], output_path: str) -> None:
-    """Merge multiple DOCX files into a single DOCX preservando formato y encabezados exactamente como están"""
+    """Merge multiple DOCX files into a single DOCX preserving original format and headers"""
     import logging
+    import shutil
+    from docxcompose.composer import Composer
     from docx import Document
-    from docx.enum.section import WD_SECTION_START
-    from docx.oxml import parse_xml, OxmlElement
-    from docx.oxml.ns import qn
-    from copy import deepcopy
     
     logging.info(f"Fusionando {len(file_paths)} archivos DOCX preservando formato original")
     logging.info(f"Archivos a fusionar: {[os.path.basename(f) for f in file_paths]}")
-    
+
     if not file_paths:
         return
-    
-    # Si solo hay un archivo, simplemente copiarlo y salir
+
     if len(file_paths) == 1:
         shutil.copy(file_paths[0], output_path)
         return
-    
+
     try:
         # Usar el primer documento como base
         master = Document(file_paths[0])
-        
-        # Función para agregar un salto de página
-        def add_page_break(doc):
-            paragraph = doc.add_paragraph()
-            run = paragraph.add_run()
-            br = OxmlElement('w:br')
-            br.set(qn('w:type'), 'page')
-            run._r.append(br)
+        composer = Composer(master)
         
         # Agregar cada documento adicional
         for i, file_path in enumerate(file_paths[1:], 1):
-            logging.info(f"Agregando documento {i+1}: {os.path.basename(file_path)}")
-            
-            # Agregar un salto de página antes de cada documento adicional
-            add_page_break(master)
-            
-            # Abrir el documento a agregar
+            logging.info(f"Agregando documento {i}: {os.path.basename(file_path)}")
             doc = Document(file_path)
             
-            # Copiar el contenido del documento
-            for element in doc.element.body:
-                # Clonar el elemento XML
-                new_element = deepcopy(element)
-                # Agregar al documento maestro
-                master.element.body.append(new_element)
+            # Usar docxcompose para agregar el documento, esto preservará el formato original
+            # y agregará automáticamente un salto de sección entre documentos
+            composer.append(doc)
         
         # Guardar el documento combinado
-        logging.info(f"Guardando documento combinado en {output_path}")
-        master.save(output_path)
-        logging.info("Documento guardado exitosamente")
-    
+        composer.save(output_path)
+        logging.info(f"Documento combinado guardado en {output_path}")
     except Exception as e:
         logging.error(f"Error al fusionar documentos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al fusionar documentos: {str(e)}")
         raise
 
 @app.post("/api/merge/")
