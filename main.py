@@ -80,6 +80,8 @@ def merge_docx_preserving_headers(file_paths: List[str], output_path: str) -> No
     composer = Composer(base)
     for path in file_paths[1:]:
         doc = Document(path)
+        # Añadir un salto de página antes de agregar el documento
+        composer.add_page_break()
         composer.append(doc)
     composer.save(output_path)
 
